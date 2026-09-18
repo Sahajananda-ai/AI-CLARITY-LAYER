@@ -1,0 +1,162 @@
+{
+  "name": "Paytm AI Clarity — Milestone Fan-out",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "paytm-clarity",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Milestone webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "webhookId": "paytm-clarity",
+      "notes": "Receives { event, reference, phone, language, channels, message, journeyType, sentAt } from the app on every OTP, application_received, documents_verified, approved or finalized milestone."
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "version": 2 },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.body.event }}",
+                    "rightValue": "approved",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "approved"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "version": 2 },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.body.event }}",
+                    "rightValue": "finalized",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+ "outputKey": "finalized"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "event-switch",
+      "name": "Route by event",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [220, 0],
+      "notes": "Approval/finalisation are the high-signal events; route them to the ops channels. Everything else falls through."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "slack-text",
+              "name": "text",
+              "value": "🎉 {{ $json.body.reference }} ({{ $json.body.journeyType }}) for +91 {{ $json.body.phone }} → {{ $json.body.event }}. Message sent: \"{{ $json.body.message }}\"",
+              "type": "string"
+            },
+            {
+              "id": "slack-channel",
+              "name": "channel",
+              "value": "#loan-ops",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "format-slack",
+      "name": "Format for Slack",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [440, -100]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://slack.com/api/chat.postMessage",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "slackApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ channel: $json.channel, text: $json.text }) }}",
+        "options": {}
+      },
+      "id": "post-slack",
+      "name": "Slack ops alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, -100]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": { "__rl": true, "mode": "list", "value": "" },
+        "sheetName": { "__rl": true, "mode": "list", "value": "" },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "append-sheet",
+      "name": "Log to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [660, 100],
+      "notes": "One row per milestone: timestamp, reference, phone, event, language, message. The ops audit log for free."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v19.0/{{ $env.WHATSAPP_PHONE_ID }}/messages",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ messaging_product: 'whatsapp', to: $json.body.phone, type: 'text', text: { body: $json.body.message } }) }}",
+        "options": {}
+      },
+      "id": "send-whatsapp",
+      "name": "WhatsApp Business send",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 220],
+      "notes": "Production path: real WhatsApp Business API delivery of the exact message the demo rendered. Add the bearer token via $env.WHATSAPP_TOKEN."
+    }
+  ],
+  "connections": {
+    "Milestone webhook": {
+      "main": [[{ "node": "Route by event", "type": "main", "index": 0 }]]
+    },
+    "Route by event": {
+      "main": [
+        [{ "node": "Format for Slack", "type": "main", "index": 0 }],
+        [{ "node": "WhatsApp Business send", "type": "main", "index": 0 }]
+      ]
+    },
+    "Format for Slack": {
+      "main": [[{ "node": "Slack ops alert", "type": "main", "index": 0 }]]
+    },
+    "WhatsApp Business send": {
+      "main": [[{ "node": "Log to Google Sheets", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}

@@ -1,6 +1,9 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AppProvider } from './contexts/AppContext';
+import { I18nProvider } from './shared/i18n';
 import { ErrorBoundary } from './shared/components';
+import { LifecycleRunner } from './features/notifications';
+import { AuthGate } from './pages/AuthGate';
 import { Landing, Wizard, Dashboard } from './pages';
 
 function AppRoutes() {
@@ -17,11 +20,18 @@ function AppRoutes() {
 function App() {
   return (
     <ErrorBoundary>
-      <AppProvider>
-        <BrowserRouter>
-          <AppRoutes />
-        </BrowserRouter>
-      </AppProvider>
+      <I18nProvider>
+        <AppProvider>
+          {/* Router wraps the auth gate so the login screen can navigate. */}
+          <BrowserRouter>
+            <AuthGate>
+              <AppRoutes />
+            </AuthGate>
+          </BrowserRouter>
+          {/* Simulated backend clock: fires the verified/approved/finalised SMS + WhatsApp milestones. */}
+          <LifecycleRunner />
+        </AppProvider>
+      </I18nProvider>
     </ErrorBoundary>
   );
 }

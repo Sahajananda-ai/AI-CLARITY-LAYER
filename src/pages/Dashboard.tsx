@@ -1,10 +1,14 @@
+import { useState } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
 import { useApp } from '../contexts/AppContext';
 import { ChatWindow } from '../features/chat/components/ChatWindow';
 import { buildReference, getApplicationStage, getDocumentSnapshot } from '../features/chat/engine';
+import { NotificationFeed, dispatchNotification } from '../features/notifications';
+import { generateStatementPdf } from '../features/statement';
 import { DocumentStatusList } from '../features/documents';
 import { getDocumentRequirements } from '../features/documents';
-import { Badge, Button, Card } from '../shared/components';
+import { Badge, Button, Card, LanguageToggle } from '../shared/components';
+import { useI18n } from '../shared/i18n';
 import {
   ArrowLeft,
   CreditCard,
@@ -15,6 +19,8 @@ import {
   AlertCircle,
   XCircle,
   CircleDot,
+  FileDown,
+  FastForward,
 } from 'lucide-react';
 import { JOURNEY_CONFIG, JOURNEY_STAGES, VERDICT_LABELS, VERDICT_COLORS } from '../shared/utils/constants';
 import { cn, formatCurrency } from '../shared/utils/cn';
@@ -22,7 +28,9 @@ import { cn, formatCurrency } from '../shared/utils/cn';
 export function Dashboard() {
   const { state, actions } = useApp();
   const navigate = useNavigate();
+  const { dict, format, language } = useI18n();
   const { journeyType, applicant, eligibilityResult, uploadedDocuments } = state;
+  const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
 
   // Nothing to track yet — send the applicant back to the right step.
   if (!journeyType) return <Navigate to="/" replace />;
@@ -42,24 +50,72 @@ export function Dashboard() {
     navigate('/wizard');
   };
 
+  const downloadPdf = () => {
+    if (!journeyType || !applicant || !eligibilityResult) return;
+    setIsGeneratingPdf(true);
+    // Let the button paint its busy state before the (synchronous) build runs.
+    window.setTimeout(() => {
+      try {
+        generateStatementPdf({
+          journeyType,
+          applicant,
+          eligibility: eligibilityResult,
+          uploadedDocs: uploadedDocuments,
+          notifications: state.notifications,
+          reference,
+          stageLabel: stage.label,
+          language,
+          dict,
+        });
+      } finally {
+        setIsGeneratingPdf(false);
+      }
+    }, 60);
+  };
+
+  /** Demo control: fire the next lifecycle milestone immediately. */
+  const advanceStageNow = () => {
+    const order = ['received', 'verified', 'approved', 'finalized'] as const;
+    const next = state.lifecycle ? order[order.indexOf(state.lifecycle) + 1] : ('verified' as const);
+    if (!next || next === 'received' || !journeyType || !applicant || !state.phone) return;
+    const kinds = { verified: 'documents_verified', approved: 'approved', finalized: 'finalized' } as const;
+    const kind: (typeof kinds)[keyof typeof kinds] = kinds[next];
+    if (kind) {
+      actions.addNotification(
+        dispatchNotification(kind, {
+          journeyType,
+          applicant,
+          reference,
+          language,
+          dict,
+          phone: state.phone,
+        })
+      );
+    }
+    actions.advanceLifecycle(next);
+  };
+
   return (
     <div className="min-h-screen bg-surface-50">
       <header className="sticky top-0 z-10 border-b border-surface-200 bg-white">
         <div className="mx-auto max-w-7xl px-4 py-3">
           <div className="flex items-center justify-between gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="flex-shrink-0 whitespace-nowrap"
-              onClick={() => {
-                actions.reset();
-                navigate('/');
-              }}
-            >
-              <ArrowLeft className="h-4 w-4" />
-              <span className="hidden sm:inline">New application</span>
-              <span className="sm:hidden">New</span>
-            </Button>
+            <div className="flex flex-shrink-0 items-center gap-2">
+              <LanguageToggle className="hidden sm:inline-flex" />
+              <Button
+                variant="ghost"
+                size="sm"
+                className="whitespace-nowrap"
+                onClick={() => {
+                  actions.reset();
+                  navigate('/');
+                }}
+              >
+                <ArrowLeft className="h-4 w-4" />
+                <span className="hidden sm:inline">{dict.newApplication}</span>
+                <span className="sm:hidden">{dict.new}</span>
+              </Button>
+            </div>
 
             <div className="flex min-w-0 items-center gap-3">
               <div className="hidden h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-primary-100 sm:flex">
@@ -86,6 +142,9 @@ export function Dashboard() {
           <p className="mt-2 truncate text-xs text-surface-500 sm:hidden">
             {config.title} • {applicant.fullName} • {reference}
           </p>
+          <div className="mt-2 sm:hidden">
+            <LanguageToggle />
+          </div>
         </div>
       </header>
 
@@ -94,16 +153,28 @@ export function Dashboard() {
         <Card variant="elevated" padding="md" className="mb-6">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
             <div>
-              <h2 className="text-sm font-semibold text-surface-900">Where your application stands</h2>
+              <h2 className="text-sm font-semibold text-surface-900">{dict.dashboard.whereStands}</h2>
               <p className="text-xs text-surface-500">
                 {stage.blocker
-                  ? `Held up by: ${stage.blocker}`
-                  : 'Nothing is blocking you — an underwriter is picking this up next.'}
+                  ? format(dict.dashboard.heldUpBy, { blocker: stage.blocker })
+                  : dict.dashboard.nothingBlocking}
               </p>
             </div>
-            <span className="rounded-full bg-surface-100 px-3 py-1 text-xs font-medium text-surface-600">
-              Step {stage.index + 1} of {stages.length}
-            </span>
+            <div className="flex items-center gap-2">
+              {state.submitted && state.lifecycle !== 'finalized' && (
+                <Button variant="secondary" size="sm" onClick={advanceStageNow} title="Demo control: skip ahead to the next milestone now">
+                  <FastForward className="h-4 w-4" />
+                  Advance stage now
+                </Button>
+              )}
+              <Button size="sm" onClick={downloadPdf} loading={isGeneratingPdf} id="pdf-download-btn">
+                <FileDown className="h-4 w-4" />
+                {dict.statement.downloadPdf}
+              </Button>
+              <span className="hidden rounded-full bg-surface-100 px-3 py-1 text-xs font-medium text-surface-600 md:inline">
+                {format(dict.dashboard.stepOf, { current: stage.index + 1, total: stages.length })}
+              </span>
+            </div>
           </div>
 
           <ol className="flex flex-col gap-3 sm:flex-row sm:items-start">
@@ -139,9 +210,15 @@ export function Dashboard() {
 
         {/* grid-cols-1 matters: without an explicit base track, the implicit
             auto track sizes to max-content and the page overflows on phones. */}
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-12">
+          {/* Notification feed spans the first column on md and stacks on mobile */}
+          <div className="lg:col-span-3 md:order-3 lg:order-1">
+            <Card variant="elevated" padding="none" className="flex h-[520px] flex-col lg:sticky lg:top-24">
+              <NotificationFeed />
+            </Card>
+          </div>
           {/* Eligibility summary */}
-          <div className="lg:col-span-4">
+          <div className="lg:col-span-3">
             <Card variant="elevated" padding="lg" className="lg:sticky lg:top-24">
               <div className="mb-5 flex items-center gap-2">
                 <Sparkles className="h-4 w-4 text-primary-600" />
@@ -238,7 +315,7 @@ export function Dashboard() {
           </div>
 
           {/* Documents */}
-          <div className="lg:col-span-4">
+          <div className="lg:col-span-3">
             <Card variant="elevated" padding="lg" className="lg:sticky lg:top-24">
               <div className="mb-4 flex items-center justify-between gap-2">
                 <h2 className="text-sm font-semibold text-surface-900">Document review</h2>
@@ -315,7 +392,7 @@ export function Dashboard() {
           </div>
 
           {/* Assistant */}
-          <div className="lg:col-span-4">
+          <div className="lg:col-span-3 md:order-2 lg:order-4">
             <Card variant="elevated" padding="none" className="flex h-[70vh] min-h-[460px] flex-col lg:sticky lg:top-24 lg:h-[640px]">
               <ChatWindow />
             </Card>

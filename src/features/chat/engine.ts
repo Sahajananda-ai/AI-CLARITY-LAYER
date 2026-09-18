@@ -64,7 +64,22 @@ const INTENT_PATTERNS: { intent: ChatIntent; weight: number; pattern: RegExp }[]
   // Weighted above `eligibility` on purpose: "what would improve my score"
   // mentions "score", but the applicant wants the actionable answer, not the scoreboard.
   { intent: 'improve', weight: 4, pattern: /\b(improve|increase|better|fix|reject\w*|declin\w*|denied|roadblock|blocker)\b/ },
+  // "How can I become more eligible if my score came out low?" — 'eligible' and
+  // 'score' both pull toward `eligibility`, so these need top weight.
+  { intent: 'improve', weight: 5, pattern: /\b(more eligible|become eligible|become more|raise my|boost my)\b/ },
+  { intent: 'improve', weight: 4, pattern: /\b(low|weak|poor|bad|less)\s+(score|cibil|credit|eligib\w*)\b/ },
   { intent: 'improve', weight: 2, pattern: /\b(what should i do|what can i do|why not|change the outcome)\b/ },
+  // Repayment: "how do I repay / close / prepay" — weighted above `amount` so
+  // "how much do I repay monthly" lands here when repayment is the intent.
+  { intent: 'repayment', weight: 4, pattern: /\b(repay|repayment|prepay|prepay\w*|foreclos\w*|part.?payment|pay off|payback|pay back|autopay|mandate|emi date|due date)\b/ },
+  { intent: 'repayment', weight: 2, pattern: /\b(how to pay|how do i pay|ways to pay|payment methods)\b/ },
+  // Missed payment: must outrank `repayment` ("miss" + "pay" co-occur) and
+  // `timeline` ("what happens now").
+  { intent: 'missed_payment', weight: 5, pattern: /\b(missed|miss|i skipped|skipped|late payment|default\w*|overdue|past due|behind on)\b/ },
+  { intent: 'missed_payment', weight: 3, pattern: /\b(can'?t pay|cannot pay|unable to pay|no money this month|lost my job|payment failed)\b/ },
+  // Policy explainer: what the product covers/offers, claims, charges.
+  { intent: 'policy', weight: 4, pattern: /\b(policy|cover|covered|coverage|claim|claims|exclusion|exclusions|terms|scheme|schemes|benefits|what does it (cover|offer|include)|insured)\b/ },
+  { intent: 'policy', weight: 2, pattern: /\b(how does .*(work|loan|insurance)|what is (a |an )?(personal loan|term insurance)|late fee|charges|rules)\b/ },
   { intent: 'contact', weight: 3, pattern: /\b(human|agent|representative|executive|customer care|call|phone|email|branch|talk to someone)\b/ },
   { intent: 'cancel', weight: 3, pattern: /\b(cancel|withdraw|stop|abort|opt out|no longer)\b/ },
 ];
@@ -78,7 +93,11 @@ export function classifyIntent(message: string): { intent: ChatIntent; signals: 
     const match = lower.match(pattern);
     if (match) {
       scores.set(intent, (scores.get(intent) ?? 0) + weight);
-      for (const term of match) signals.add(term.trim());
+      // Nested alternation groups can be undefined when a sibling branch
+      // matched, so filter before trimming.
+      for (const term of match) {
+        if (term) signals.add(term.trim());
+      }
     }
   }
 
@@ -495,6 +514,140 @@ function improveResponse(ctx: ChatContext): string {
   return lines.join('\n');
 }
 
+/* ------------------------------------------------- repayment & policy answers */
+
+/**
+ * Repayment answer — computed from the live loan so the "how" always carries
+ * the applicant's real numbers. For insurance it explains premium payment.
+ */
+function repaymentResponse(ctx: ChatContext): string {
+  if ('loanAmount' in ctx.applicant) {
+    const applicant = ctx.applicant as LoanApplicant;
+    const rate = JOURNEY_CONFIG.loan.annualInterestRate;
+    const tenure = Number(applicant.tenureMonths);
+    const emi = calculateEmi(applicant.loanAmount, rate, tenure);
+    const total = emi * tenure;
+
+    return [
+      `Here is exactly how repayment works on your **${formatCurrency(applicant.loanAmount)}** loan:`,
+      '',
+      `• **Your EMI is ${formatCurrency(emi)}/month** for ${tenure} months, starting one month after disbursal, same date.`,
+      `• Total you will repay: **${formatCurrency(total)}** (${formatCurrency(total - applicant.loanAmount)} of that is interest).`,
+      `• Every EMI = interest for the month + a growing slice of principal (amortisation). The interest share shrinks every month.`,
+      '',
+      `**Ways to pay** (in order of convenience):`,
+      `• UPI Autopay — set once, debited automatically on the due date.`,
+      `• Debit-card e-mandate or net-banking transfer — manual, but reliable.`,
+      '',
+      `**Paying early:** part-payment any time after 6 EMIs, zero charges — choose whether it shrinks your EMI or your remaining term. Full foreclosure is free after 6 EMIs too.`,
+      '',
+      `**Criteria we watch during repayment:** on-time record is reported to the bureau monthly; utilisation of credit lines under 30% and no new heavy EMIs keep your profile strong for the next loan.`,
+    ].join('\n');
+  }
+
+  const applicant = ctx.applicant as InsuranceApplicant;
+  const loading = conditionLoadingOf(applicant);
+  const termYears = Number(applicant.policyTermYears);
+  const annual = estimateAnnualPremium(applicant.age, applicant.coverageAmount, termYears, loading);
+
+  return [
+    `For your term plan, "repayment" is the **premium** — ${formatCurrency(annual)}/year (≈ ${formatCurrency(annual / 12)}/month) for ${termYears} years:`,
+    '',
+    `• Pay annually and save ~2% versus monthly mode; UPI autopay or card mandate both work.`,
+    `• Premiums are **level** — locked at today's rate for all ${termYears} years, no age-based hikes.`,
+    `• A **30-day grace period** follows every due date; cover continues untouched if you pay within it.`,
+    `• After grace, the policy lapses — but you can revive within 2 years by clearing arrears plus a health declaration.`,
+    `• Section 80C tax benefit applies to premiums; the payout itself is tax-free under 10(10D).`,
+  ].join('\n');
+}
+
+/** What actually happens if an EMI/premium is missed — day by day. */
+function missedPaymentResponse(ctx: ChatContext): string {
+  if ('loanAmount' in ctx.applicant) {
+    const applicant = ctx.applicant as LoanApplicant;
+    const rate = JOURNEY_CONFIG.loan.annualInterestRate;
+    const emi = calculateEmi(applicant.loanAmount, rate, Number(applicant.tenureMonths));
+
+    return [
+      `Straight answer, no sugar-coating. If your **${formatCurrency(emi)} EMI** bounces or is missed:`,
+      '',
+      `• **Day 1-3** — reminder SMS + WhatsApp from me; nothing else happens.`,
+      `• **Day 4** — a late fee of ₹500 + GST is added to your account.`,
+      `• **Day 4-30** — the overdue EMI is reported to CIBIL. A single 30-day delinquency typically drops the score 40-80 points and stays on the report for 24 months.`,
+      `• **Day 30-90** — recovery calls begin; the account is flagged as DPD (days-past-due) 30/60/90.`,
+      `• **Beyond 90 days** — the full outstanding can be recalled, and future loan approvals get very hard.`,
+      '',
+      `**The good news:** pay the overdue EMI + late fee any time before day 90 and the account returns to good standing — the "paid late" mark fades in impact well before it drops off.`,
+      '',
+      `**If this month is tight, do this instead:** pay partial (any amount stops the DPD clock at day 30), or tell me now and I can check restructuring options on your file.`,
+    ].join('\n');
+  }
+
+  return [
+    `For term insurance, a missed premium is gentler — but has a hard edge:`,
+    '',
+    `• **Within the 30-day grace period** — pay normally, cover and policy continue exactly as before. Nothing is reported anywhere.`,
+    `• **Beyond 30 days** — the policy **lapses**: your family is no longer covered, and premiums already paid do not come back automatically.`,
+    `• **Revival window** — within 2 years you can revive by paying all arrears plus interest and a fresh health declaration. Underwriting may re-price.`,
+    `• **After 2 years** — the policy terminates permanently; you would need a new policy at your then-age rates.`,
+    '',
+    `One honest note: a lapsed-then-revived policy can raise claim scrutiny, so autopay is genuinely the safest setup.`,
+  ].join('\n');
+}
+
+/** What the product offers/covers — the "schemes and policy" explainer. */
+function policyResponse(ctx: ChatContext): string {
+  const snapshot = getDocumentSnapshot(ctx.journeyType, ctx.uploadedDocs);
+
+  if ('loanAmount' in ctx.applicant) {
+    const applicant = ctx.applicant as LoanApplicant;
+    const rate = JOURNEY_CONFIG.loan.annualInterestRate;
+    const fee = applicant.loanAmount * JOURNEY_CONFIG.loan.processorFeePct;
+
+    return [
+      `Here is what your personal loan actually offers, in one place:`,
+      '',
+      `**The offer**`,
+      `• ${formatCurrency(applicant.loanAmount)} over ${applicant.tenureMonths} months at ~${(rate * 100).toFixed(2)}% p.a. (fixed).`,
+      `• One-time processing fee: ${formatCurrency(fee)} + GST, deducted at disbursal — no hidden charges after that.`,
+      `• Zero prepayment/foreclosure penalty after 6 EMIs.`,
+      '',
+      `**How the loan works**`,
+      `• You receive the full amount in one transfer; the EMI (interest + principal) is fixed every month.`,
+      `• The bureau sees your repayment monthly — this loan *builds* credit history when paid on time.`,
+      `• Collateral: none. This is an unsecured product.`,
+      '',
+      `**What it does not do**`,
+      `• No top-up mid-term on this product; no interest-only months.`,
+      `• Late payments cost real money (₹500+GST) and bureau damage — ask me "what if I miss a month?" for the timeline.`,
+      '',
+      `Your documents: ${snapshot.verified.length} verified${snapshot.allRequiredVerified ? '' : ', some still pending'} — the PDF statement on the dashboard carries all of this with your numbers.`,
+    ].join('\n');
+  }
+
+  const applicant = ctx.applicant as InsuranceApplicant;
+  const loading = conditionLoadingOf(applicant);
+  const annual = estimateAnnualPremium(applicant.age, applicant.coverageAmount, Number(applicant.policyTermYears), loading);
+
+  return [
+    `Your term plan, explained plainly:`,
+    '',
+    `**What your family gets**`,
+    `• The full **${formatCurrency(applicant.coverageAmount)}** as a tax-free lump sum if anything happens to you during the ${applicant.policyTermYears}-year term.`,
+    `• Claim payout within 30 days of complete documents; nominee can raise it online, by phone or at a branch.`,
+    '',
+    `**What you pay**`,
+    `• ${formatCurrency(annual)}/year (level premium, locked for the whole term)${loading > 0 ? `, including the ~${Math.round(loading * 100)}% loading for your declared condition` : ''}.`,
+    `• GST extra; Section 80C deduction on the premium.`,
+    '',
+    `**What is covered** — death from any cause after year 1 (accidents from day 1).`,
+    `**What is not** — suicide in year 1 (premiums refunded), and any condition you did not declare. Disclosure is what makes the claim payable.`,
+    `**Extras** — 15-day free look on receipt, 30-day grace on premiums, optional riders (accidental death, critical illness) at issue time.`,
+    '',
+    `The PDF statement has all of this with your exact numbers.`,
+  ].join('\n');
+}
+
 /* -------------------------------------------------------------- other answers */
 
 function contactResponse(reference: string): string {
@@ -576,6 +729,15 @@ export async function generateChatResponse(message: string, context: ChatContext
         break;
       case 'improve':
         response = improveResponse(ctx);
+        break;
+      case 'repayment':
+        response = repaymentResponse(ctx);
+        break;
+      case 'missed_payment':
+        response = missedPaymentResponse(ctx);
+        break;
+      case 'policy':
+        response = policyResponse(ctx);
         break;
       case 'contact':
         response = contactResponse(reference);

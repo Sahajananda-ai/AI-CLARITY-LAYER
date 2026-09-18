@@ -12,12 +12,22 @@ const THINKING_STEPS = [
   'Working out the dates…',
 ];
 
+/**
+ * Quick questions rotate: the first five are status-oriented (what a fresh
+ * applicant needs), the rest cover repayment, missed payments and policy so
+ * the deeper questions are discoverable without typing.
+ */
 const QUICK_QUESTIONS = [
   { label: "Where's my application?", text: "Where's my application right now?" },
   { label: 'Which docs are pending?', text: 'Which documents are still pending?' },
   { label: 'When will I hear back?', text: 'When will I hear back?' },
   { label: 'How much will it cost?', text: 'How much will it cost me per month?' },
   { label: 'What would improve my score?', text: 'What would improve my score?' },
+  { label: 'How do I repay?', text: 'How do I repay the loan?' },
+  { label: "What if I miss a month?", text: 'What happens if I miss one month repayment?' },
+  { label: 'What does the policy cover?', text: 'What does the policy cover and what are the benefits?' },
+  { label: 'What are the criteria?', text: 'What are the criteria of repayment and eligibility?' },
+  { label: 'How to become more eligible?', text: 'How can I become more eligible if my score is low?' },
 ];
 
 /**
@@ -182,12 +192,13 @@ export function ChatWindow() {
         )}
       </div>
 
-      {/* Quick questions */}
-      {messages.length <= 1 && !isLoading && (
+      {/* Quick questions — always available, collapsed to a scrollable row
+          once the conversation gets going so manual typing stays primary. */}
+      {!isLoading && (
         <div className="border-t border-surface-200 px-4 py-3">
-          <p className="mb-2 text-xs font-medium text-surface-500">Try asking</p>
+          <p className="mb-2 text-xs font-medium text-surface-500">Try asking — or just type below</p>
           <div className="flex flex-wrap gap-2">
-            {QUICK_QUESTIONS.map(question => (
+            {(messages.length <= 1 ? QUICK_QUESTIONS : QUICK_QUESTIONS.slice(5)).map(question => (
               <button
                 key={question.label}
                 type="button"
@@ -201,17 +212,18 @@ export function ChatWindow() {
         </div>
       )}
 
-      {/* Composer */}
+      {/* Composer — free typing is the primary interaction */}
       <form onSubmit={handleSubmit} className="border-t border-surface-200 p-3">
         <div className="flex items-end gap-2">
           <Input
             value={input}
             onChange={event => setInput(event.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Ask about status, documents, cost or timeline…"
+            placeholder="Ask about status, documents, cost, repayment, missed payments…"
             aria-label="Message the application assistant"
             className="flex-1"
             disabled={isLoading}
+            autoComplete="off"
           />
           <Button type="submit" disabled={!input.trim() || isLoading} className="h-11 flex-shrink-0" aria-label="Send message">
             <Send className="h-4 w-4" />
@@ -219,7 +231,7 @@ export function ChatWindow() {
         </div>
         <p className="mt-2 flex items-center gap-1.5 text-[11px] text-surface-400">
           <ShieldCheck className="h-3 w-3" />
-          Answers come from your application data — no external AI service, works offline.
+          Ask anything in your own words — replies are computed from your application data, offline.
         </p>
       </form>
     </div>

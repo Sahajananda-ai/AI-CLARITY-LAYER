@@ -9,6 +9,7 @@ import type {
 import { DOCUMENT_REQUIREMENTS } from '../shared/utils/constants';
 import { getInitialUploadedDocuments } from '../features/documents';
 import { createWelcomeMessage } from '../features/chat/engine';
+import type { NotificationRecord, LifecycleStage } from '../features/notifications/engine';
 
 export type WizardStep = 'details' | 'eligibility' | 'documents';
 
@@ -20,6 +21,12 @@ interface AppState {
   chatMessages: ChatMessage[];
   submitted: boolean;
   wizardStep: WizardStep;
+  /** Authentication: the verified phone number, or null when logged out. */
+  phone: string | null;
+  notifications: NotificationRecord[];
+  /** Post-submit simulation clock: which milestone has fired. */
+  lifecycle: LifecycleStage | null;
+  lifecycleAdvancedAt: number | null;
 }
 
 type AppAction =
@@ -31,6 +38,11 @@ type AppAction =
   | { type: 'ADD_CHAT_MESSAGE'; payload: ChatMessage }
   | { type: 'SET_WIZARD_STEP'; payload: WizardStep }
   | { type: 'SUBMIT_APPLICATION' }
+  | { type: 'SET_PHONE'; payload: string | null }
+  | { type: 'ADD_NOTIFICATION'; payload: NotificationRecord }
+  | { type: 'MARK_NOTIFICATIONS_READ' }
+  | { type: 'CLEAR_NOTIFICATIONS' }
+  | { type: 'ADVANCE_LIFECYCLE'; payload: LifecycleStage }
   | { type: 'RESET' };
 
 const initialState: AppState = {
@@ -41,6 +53,10 @@ const initialState: AppState = {
   chatMessages: [],
   submitted: false,
   wizardStep: 'details',
+  phone: null,
+  notifications: [],
+  lifecycle: null,
+  lifecycleAdvancedAt: null,
 };
 
 const STORAGE_KEY = 'paytm-clarity-state-v1';
@@ -72,6 +88,12 @@ function reviveApplicationState(raw: string): AppState {
             timestamp: message.timestamp ? new Date(message.timestamp) : new Date(),
           }))
         : [],
+      notifications: Array.isArray(parsed.notifications)
+        ? parsed.notifications.map(notification => ({
+            ...notification,
+            sentAt: notification.sentAt ? new Date(notification.sentAt) : new Date(),
+          }))
+        : [],
       wizardStep: parsed.wizardStep ?? 'details',
     };
   } catch {
@@ -90,6 +112,9 @@ function reducer(state: AppState, action: AppAction): AppState {
     case 'SET_JOURNEY':
       return {
         ...initialState,
+        // The login session survives starting a new application.
+        phone: state.phone,
+        notifications: state.notifications,
         journeyType: action.payload,
         uploadedDocuments: getInitialUploadedDocuments(DOCUMENT_REQUIREMENTS[action.payload]),
         wizardStep: 'details',
@@ -144,8 +169,30 @@ function reducer(state: AppState, action: AppAction): AppState {
           : state.chatMessages;
       return { ...state, submitted: true, chatMessages };
     }
+    case 'SET_PHONE':
+      return { ...state, phone: action.payload };
+    case 'ADD_NOTIFICATION':
+      return { ...state, notifications: [...state.notifications, action.payload] };
+    case 'MARK_NOTIFICATIONS_READ':
+      return {
+        ...state,
+        notifications: state.notifications.map(notification => ({ ...notification, read: true })),
+      };
+    case 'CLEAR_NOTIFICATIONS':
+      return { ...state, notifications: [] };
+    case 'ADVANCE_LIFECYCLE':
+      // Both the stage and the timestamp move together: the runner re-arms its
+      // timer from the new timestamp, and the dashboard derives the tracker
+      // position from the stage.
+      return { ...state, lifecycle: action.payload, lifecycleAdvancedAt: Date.now() };
     case 'RESET':
-      return initialState;
+      return {
+        ...initialState,
+        // Keep the session and the notification history: logging out is not
+        // the same as wiping the phone's message feed.
+        phone: state.phone,
+        notifications: state.notifications,
+      };
     default:
       return state;
   }
@@ -162,6 +209,11 @@ interface AppContextValue {
     addChatMessage: (message: ChatMessage) => void;
     setWizardStep: (step: WizardStep) => void;
     submitApplication: () => void;
+    setPhone: (phone: string | null) => void;
+    addNotification: (record: NotificationRecord) => void;
+    markNotificationsRead: () => void;
+    clearNotifications: () => void;
+    advanceLifecycle: (stage: LifecycleStage) => void;
     reset: () => void;
   };
 }
@@ -192,6 +244,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       addChatMessage: (message: ChatMessage) => dispatch({ type: 'ADD_CHAT_MESSAGE', payload: message }),
       setWizardStep: (step: WizardStep) => dispatch({ type: 'SET_WIZARD_STEP', payload: step }),
       submitApplication: () => dispatch({ type: 'SUBMIT_APPLICATION' }),
+      setPhone: (phone: string | null) => dispatch({ type: 'SET_PHONE', payload: phone }),
+      addNotification: (record: NotificationRecord) => dispatch({ type: 'ADD_NOTIFICATION', payload: record }),
+      markNotificationsRead: () => dispatch({ type: 'MARK_NOTIFICATIONS_READ' }),
+      clearNotifications: () => dispatch({ type: 'CLEAR_NOTIFICATIONS' }),
+      advanceLifecycle: (stage: LifecycleStage) => dispatch({ type: 'ADVANCE_LIFECYCLE', payload: stage }),
       reset: () => {
         try {
           window.localStorage.removeItem(STORAGE_KEY);

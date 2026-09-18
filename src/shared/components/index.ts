@@ -6,3 +6,4 @@ export { Badge, type BadgeProps } from './Badge';
 export { Spinner, type SpinnerProps } from './Spinner';
 export { RichText } from './RichText';
 export { ErrorBoundary } from './ErrorBoundary';
+export { LanguageToggle } from './LanguageToggle';

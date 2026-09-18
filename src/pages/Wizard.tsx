@@ -7,24 +7,27 @@ import { EligibilityForm } from '../features/eligibility/components/EligibilityF
 import { EligibilityResultView } from '../features/eligibility/components/EligibilityResult';
 import { DocumentList } from '../features/documents/components/DocumentList';
 import { Button, Card, Spinner, Badge } from '../shared/components';
+import { useI18n } from '../shared/i18n';
+import { dispatchNotification } from '../features/notifications/engine';
+import { buildReference } from '../features/chat/engine';
 import { useAIThinking } from '../shared/hooks';
 import { ArrowLeft, CheckCircle2, Sparkles, AlertCircle, WandSparkles, Send } from 'lucide-react';
 import type { Applicant } from '../shared/types/common';
 import { JOURNEY_CONFIG, ELIGIBILITY_PROCESSING_STEPS } from '../shared/utils/constants';
 import { cn } from '../shared/utils/cn';
 
-const STEP_LABELS = { details: 'Your details', eligibility: 'Eligibility', documents: 'Documents' } as const;
 const STEPS = ['details', 'eligibility', 'documents'] as const;
 
 export function Wizard() {
   const { state, actions } = useApp();
+  const { dict, format, language } = useI18n();
   const navigate = useNavigate();
 
   const [isChecking, setIsChecking] = useState(false);
   const [busyDocumentId, setBusyDocumentId] = useState<string | null>(null);
   const [isAutoFilling, setIsAutoFilling] = useState(false);
 
-  const { journeyType, applicant, eligibilityResult, uploadedDocuments, wizardStep } = state;
+  const { journeyType, applicant, eligibilityResult, uploadedDocuments, wizardStep, phone } = state;
   const thinking = useAIThinking(ELIGIBILITY_PROCESSING_STEPS, isChecking);
 
   // Deep-linking to /wizard without a journey selected starts over cleanly.
@@ -44,10 +47,10 @@ export function Wizard() {
 
   const submitBlockedReason = (() => {
     if (blockingFailures.length > 0) {
-      return `${blockingFailures.length} document${blockingFailures.length === 1 ? '' : 's'} must be fixed before we can accept this application.`;
+      return format(dict.wizard.mustFixMsg, { count: blockingFailures.length });
     }
     const missing = requiredDocuments.length - requiredVerified;
-    if (missing > 0) return `${missing} required document${missing === 1 ? '' : 's'} still need to pass review.`;
+    if (missing > 0) return format(dict.wizard.missingDocsMsg, { count: missing });
     return '';
   })();
 
@@ -105,6 +108,21 @@ export function Wizard() {
 
   const handleSubmit = () => {
     actions.submitApplication();
+    // The first milestone message goes out the moment the application is
+    // accepted (an event handler, not the reducer: dispatching performs
+    // side effects — timestamps and the optional n8n POST).
+    if (journeyType && applicant && phone) {
+      actions.addNotification(
+        dispatchNotification('application_received', {
+          journeyType,
+          applicant,
+          reference: buildReference({ journeyType, applicant }),
+          language,
+          dict,
+          phone,
+        })
+      );
+    }
     navigate('/dashboard');
   };
 
@@ -115,7 +133,7 @@ export function Wizard() {
           <div className="mb-4 flex items-center justify-between gap-3">
             <Button variant="ghost" size="sm" onClick={() => navigate('/')}>
               <ArrowLeft className="h-4 w-4" />
-              Start over
+              {dict.wizard.startOver}
             </Button>
             <div className="flex min-w-0 items-center gap-2">
               <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-primary-100">
@@ -158,7 +176,9 @@ export function Wizard() {
                         isComplete || isCurrent ? 'text-surface-900' : 'text-surface-500'
                       )}
                     >
-                      {STEP_LABELS[step]}
+                      {dict.wizard[
+                        step === 'details' ? 'stepDetails' : step === 'eligibility' ? 'stepEligibility' : 'stepDocuments'
+                      ]}
                     </span>
                   </button>
                   {index < STEPS.length - 1 && (
@@ -193,11 +213,8 @@ export function Wizard() {
         {wizardStep === 'details' && (
           <div className="space-y-6">
             <div>
-              <h2 className="text-2xl font-bold text-surface-900">Tell us about yourself</h2>
-              <p className="text-surface-600">
-                {config.fields.length} fields, about a minute. Every decision is then explained in plain language — no
-                jargon, no waiting.
-              </p>
+              <h2 className="text-2xl font-bold text-surface-900">{dict.wizard.detailsTitle}</h2>
+              <p className="text-surface-600">{format(dict.wizard.detailsSubtitle, { count: config.fields.length })}</p>
             </div>
             <EligibilityForm
               journeyType={journeyType}
@@ -215,10 +232,8 @@ export function Wizard() {
           <div className="space-y-6">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <h2 className="text-2xl font-bold text-surface-900">Upload your documents</h2>
-                <p className="text-surface-600">
-                  Each file is reviewed the moment you upload it — you will know within seconds whether it is usable.
-                </p>
+                <h2 className="text-2xl font-bold text-surface-900">{dict.wizard.docsTitle}</h2>
+                <p className="text-surface-600">{dict.wizard.docsSubtitle}</p>
               </div>
               <Button
                 variant="secondary"
@@ -228,7 +243,7 @@ export function Wizard() {
                 title="Demo helper: fills every pending document with a realistic sample so you can see the review feedback"
               >
                 {isAutoFilling ? <Spinner size="sm" /> : <WandSparkles className="h-4 w-4" />}
-                {isAutoFilling ? 'Adding samples…' : 'Demo: add all samples'}
+                {isAutoFilling ? dict.wizard.addingSamples : dict.wizard.demoAddSamples}
               </Button>
             </div>
 
@@ -246,23 +261,23 @@ export function Wizard() {
                 <p className="mb-3 flex items-start gap-2 text-sm text-warning-700">
                   <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
                   {submitBlockedReason}
-                  {warnings.length > 0 && ' Reviews marked “review advised” can be submitted, but fixing them is quicker than a rejection.'}
+                  {warnings.length > 0 && dict.wizard.warningsNote}
                 </p>
               )}
               {canSubmit && (
                 <p className="mb-3 flex items-start gap-2 text-sm text-success-700">
                   <CheckCircle2 className="mt-0.5 h-4 w-4 flex-shrink-0" />
-                  Everything required is verified. Your application is ready to submit.
+                  {dict.wizard.allVerifiedMsg}
                 </p>
               )}
               <div className="flex gap-3">
                 <Button variant="secondary" onClick={() => actions.setWizardStep('eligibility')}>
                   <ArrowLeft className="h-4 w-4" />
-                  Back
+                  {dict.back}
                 </Button>
                 <Button onClick={handleSubmit} disabled={!canSubmit} className="flex-1">
                   <Send className="h-4 w-4" />
-                  Submit application
+                  {dict.wizard.submitApplication}
                 </Button>
               </div>
             </div>
@@ -272,7 +287,10 @@ export function Wizard() {
         {wizardStep === 'documents' && (
           <div className="mt-6 text-center">
             <Badge variant="neutral" size="sm">
-              {uploadedDocuments.filter(doc => doc.fileName).length} of {documents.length} document slots filled
+              {format(dict.wizard.slotsFilled, {
+                filled: uploadedDocuments.filter(doc => doc.fileName).length,
+                total: documents.length,
+              })}
             </Badge>
           </div>
         )}
