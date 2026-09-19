@@ -13,6 +13,8 @@ import { formatCurrency } from '../../shared/utils/formatters';
 import { calculateEmi, estimateAnnualPremium, evaluateEligibility } from '../eligibility/engine';
 import { getDocumentRequirements } from '../documents/validator';
 import type { LifecycleStage } from '../notifications/engine';
+import type { LanguageCode, TranslationDict } from '../../shared/i18n';
+import * as L from './localize';
 
 /**
  * Status assistant.
@@ -35,11 +37,17 @@ export interface ChatContext {
   lifecycle: LifecycleStage | null;
   /** True once the applicant has submitted (drives post-submit stages). */
   submitted: boolean;
+  /** Language the reply should be composed in (defaults to English). */
+  language?: LanguageCode;
+  /** Active dictionary, for intent labels surfaced in the UI. */
+  dict?: TranslationDict;
 }
 
 export interface ChatReply {
   intent: ChatIntent;
   response: string;
+  /** Markdown-free version used for text-to-speech playback. */
+  speech: string;
   /** Terms that drove the classification, surfaced in the UI for transparency. */
   signals: string[];
   confidence: number;
@@ -170,6 +178,13 @@ export function getDocumentSnapshot(journeyType: JourneyType, docs: UploadedDocu
 }
 
 /** Overlay the post-submit lifecycle clock onto a document-derived stage. */
+export function withLifecycleExport(
+  stage: { index: number; label: string; blocker: string | null },
+  ctx: Pick<ChatContext, 'journeyType' | 'lifecycle' | 'submitted'>
+): { index: number; label: string; blocker: string | null } {
+  return withLifecycle(stage, ctx);
+}
+
 function withLifecycle(
   stage: { index: number; label: string; blocker: string | null },
   ctx: Pick<ChatContext, 'journeyType' | 'lifecycle' | 'submitted'>
@@ -183,35 +198,49 @@ function withLifecycle(
 }
 
 /** The stage the application would realistically be sitting in right now. */
-export function getApplicationStage(journeyType: JourneyType, snapshot: DocumentSnapshot): { index: number; label: string; blocker: string | null } {
+export function getApplicationStage(
+  journeyType: JourneyType,
+  snapshot: DocumentSnapshot
+): { index: number; label: string; blocker: string | null } {
   const stages = JOURNEY_STAGES[journeyType];
   if (snapshot.flagged.some(doc => doc.status === 'fail')) {
-    return { index: 1, label: stages[1], blocker: 'documents flagged by our reviewer' };
+    return { index: 2, label: stages[2], blocker: 'documents flagged by our reviewer' };
   }
   if (snapshot.notUploaded.length > 0) {
-    return { index: 1, label: stages[1], blocker: `${snapshot.notUploaded.length} required document(s) not uploaded yet` };
+    return {
+      index: 2,
+      label: stages[2],
+      blocker: `${snapshot.notUploaded.length} required document(s) not uploaded yet`,
+    };
   }
   if (snapshot.flagged.length > 0) {
-    return { index: 1, label: stages[1], blocker: 'documents still waiting on a manual look' };
+    return { index: 2, label: stages[2], blocker: 'documents still waiting on a manual look' };
   }
   return { index: 2, label: stages[2], blocker: null };
 }
 
-/**
- * The stage the tracker should display, combining two clocks:
+/** The stage the tracker should display, combining two clocks:
  * document readiness (above) and the post-submit lifecycle simulation. Before
  * submission the tracker follows the documents; after submission the lifecycle
  * clock takes over so approved/finalised actually move the tracker forward —
  * it used to freeze at step 3 even when the approval SMS had already landed.
  */
-export function getLifecycleStageIndex(lifecycle: LifecycleStage | null, submitted: boolean, docStageIndex: number): number {
+export function getLifecycleStageIndex(
+  lifecycle: LifecycleStage | null,
+  submitted: boolean,
+  docStageIndex: number,
+  decision?: 'approved' | 'rejected' | null
+): number {
+  if (decision === 'rejected') return 4; // Final decision stage
   if (!submitted || !lifecycle) return docStageIndex;
   const byStage: Record<LifecycleStage, number> = {
     received: 1,
     verified: 2,
-    approved: 3,
+    review: 3,
+    approved: 4,
     // Past the last step — the tracker renders every stage as completed.
     finalized: Number.MAX_SAFE_INTEGER,
+    rejected: 4,
   };
   return byStage[lifecycle];
 }
@@ -760,6 +789,15 @@ export async function generateChatResponse(message: string, context: ChatContext
   const { intent, signals, confidence } = classifyIntent(message);
   const reference = buildReference(context);
   const ctx = context;
+  const lang = ctx.language ?? 'en';
+
+  // Non-English replies take the trilingual templates: the English engine
+  // computes the numbers, `localize.*` re-renders them as natural sentences.
+  if (lang !== 'en') {
+    const response = localizeReply(lang, intent, ctx, reference);
+    await delay();
+    return { intent, response, speech: stripMarkdown(response), signals, confidence };
+  }
 
   let response: string;
 
@@ -813,7 +851,51 @@ export async function generateChatResponse(message: string, context: ChatContext
   }
 
   await delay();
-  return { intent, response, signals, confidence };
+  return { intent, response, speech: stripMarkdown(response), signals, confidence };
+}
+
+/** Compose a fully localized reply for Hindi / Kannada. */
+function localizeReply(lang: LanguageCode, intent: ChatIntent, ctx: ChatContext, reference: string): string {
+  switch (intent) {
+    case 'status':
+      return L.localizeStatus(lang, ctx, reference);
+    case 'documents':
+      return L.localizeDocuments(lang, ctx);
+    case 'timeline':
+      return L.localizeTimeline(lang, ctx);
+    case 'amount':
+      return L.localizeAmount(lang, ctx);
+    case 'repayment':
+      return L.localizeRepayment(lang, ctx);
+    case 'missed_payment':
+      return L.localizeMissed(lang, ctx);
+    case 'policy':
+      return L.localizePolicy(lang, ctx);
+    case 'eligibility':
+      return L.localizeEligibility(lang, ctx.eligibility?.verdict ?? 'eligible', ctx.eligibility?.score ?? 0);
+    case 'improve':
+      return L.localizeImprove(lang, ctx.eligibility?.suggestions[0] ?? null);
+    case 'contact':
+      return L.localizeContact(lang);
+    case 'cancel':
+      return L.localizeCancel(lang, reference);
+    case 'greeting':
+      return L.localizeGreeting(lang, ctx.applicant.fullName);
+    default:
+      return L.localizeGeneral(lang, ctx, reference);
+  }
+}
+
+/** Markdown-free text for text-to-speech. */
+export function stripMarkdown(text: string): string {
+  return text
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/\*(.+?)\*/g, '$1')
+    .replace(/^---$/gm, '')
+    .replace(/^#{1,6}\s*/gm, '')
+    .replace(/[\u2022]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 /** Stable per-application reference derived from the applicant, not a timestamp. */
@@ -830,7 +912,7 @@ export function buildReference(ctx: { journeyType: JourneyType; applicant: Appli
 /** Namespaced so a welcome message can never collide with persisted history. */
 let welcomeCounter = 0;
 
-export function createWelcomeMessage(journeyType: JourneyType, applicant: Applicant): ChatMessage {
+export function createWelcomeMessage(journeyType: JourneyType, applicant: Applicant, lang: LanguageCode = 'en'): ChatMessage {
   const amount =
     'loanAmount' in applicant
       ? `${formatCurrency((applicant as LoanApplicant).loanAmount)} loan over ${(applicant as LoanApplicant).tenureMonths} months`
@@ -841,16 +923,21 @@ export function createWelcomeMessage(journeyType: JourneyType, applicant: Applic
 
   welcomeCounter += 1;
 
+  const content =
+    lang !== 'en'
+      ? L.localizeWelcome(lang, journeyType, applicant.fullName)
+      : [
+          `Hi ${firstName}, your ${journeyWord} application for **${amount}** has reached us.`,
+          '',
+          'I am your application assistant. Unlike a status page, I can tell you *why* something is stuck and what to do next.',
+          '',
+          'Ask me: "where is my application?", "which documents are pending?", or "when will I hear back?"',
+        ].join('\n');
+
   return {
     id: `msg-welcome-${Date.now().toString(36)}-${welcomeCounter}`,
     role: 'assistant',
-    content: [
-      `Hi ${firstName}, your ${journeyWord} application for **${amount}** has reached us.`,
-      '',
-      'I am your application assistant. Unlike a status page, I can tell you *why* something is stuck and what to do next.',
-      '',
-      'Ask me: "where is my application?", "which documents are pending?", or "when will I hear back?"',
-    ].join('\n'),
+    content,
     timestamp: new Date(),
     intent: 'greeting',
   };

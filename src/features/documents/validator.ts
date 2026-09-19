@@ -434,39 +434,94 @@ export function getInitialUploadedDocuments(documents: Document[]): UploadedDocu
 
 /* ------------------------------------------------------- demo sample files */
 
-export type SampleVariant = 'clean' | 'flawed';
+export type SampleVariant =
+  | 'clean'
+  | 'flawed'
+  | 'blur'
+  | 'wrongdoc'
+  | 'stale'
+  | 'short'
+  | 'wrongname'
+  | 'expired'
+  | 'huge';
+
+/** Options for the demo problem picker, in display order. */
+export const PROBLEM_VARIANTS: { variant: SampleVariant; problemKey: keyof import('../../shared/i18n').TranslationDict['problems'] }[] = [
+  { variant: 'blur', problemKey: 'blur' },
+  { variant: 'wrongdoc', problemKey: 'wrongdoc' },
+  { variant: 'stale', problemKey: 'stale' },
+  { variant: 'short', problemKey: 'short' },
+  { variant: 'wrongname', problemKey: 'wrongname' },
+  { variant: 'expired', problemKey: 'expired' },
+  { variant: 'huge', problemKey: 'huge' },
+  { variant: 'clean', problemKey: 'clean' },
+];
 
 /**
  * Builds a real `File` object in the browser so a judge can demo the reviewer
  * without hunting for a PAN card PDF. The file name is what drives the verdict,
  * exactly as it would for a genuine upload.
+ *
+ * The named variants map one-to-one onto the demo problem picker: each one is
+ * a real rejection reason, so the judge can choose exactly which failure to
+ * showcase instead of getting a random one.
  */
 export function createSampleFile(document: Document, applicantName: string, variant: SampleVariant): File {
   const isPdfDoc = document.acceptedTypes.length === 1 && document.acceptedTypes[0] === 'application/pdf';
   const slug = normalise(applicantName || 'applicant').replace(/ /g, '-');
+  const year = new Date().getFullYear();
   let name: string;
   let sizeBytes: number;
 
-  if (variant === 'clean') {
-    name = isPdfDoc ? `${slug}-${document.id}.pdf` : `${slug}-${document.id}.jpg`;
-    if (document.id === 'salary_slips') name = `${slug}-salary-slips-3-months.pdf`;
-    if (document.id === 'bank_statement') name = `${slug}-bank-statement-6-months.pdf`;
-    if (document.id === 'form16') name = `${slug}-form-16-${new Date().getFullYear()}.pdf`;
-    if (document.id === 'income_proof') name = `${slug}-income-proof-${new Date().getFullYear()}.pdf`;
-    if (document.id === 'medical_reports') name = `${slug}-medical-report-${new Date().getFullYear()}.pdf`;
-    if (document.id === 'photo') name = `${slug}-passport-photo.jpg`;
-    sizeBytes = isPdfDoc ? 210 * 1024 : 320 * 1024;
-  } else if (isPdfDoc) {
-    // A PDF slot can't fail on legibility alone, so demo a stale/partial copy.
-    const staleYear = new Date().getFullYear() - 3;
-    if (document.id === 'salary_slips') name = `${slug}-salary-slip-1-month-${staleYear}.pdf`;
-    else if (document.id === 'bank_statement') name = `${slug}-bank-statement-2-months.pdf`;
-    else name = `${slug}-${document.id}-${staleYear}.pdf`;
-    sizeBytes = 180 * 1024;
-  } else {
-    // Blurry, WhatsApp-forwarded photo — the classic rejection reason.
-    name = `whatsapp-image-${new Date().getFullYear()}-blur.jpg`;
-    sizeBytes = 48 * 1024;
+  switch (variant) {
+    case 'blur':
+      // Blurry, WhatsApp-forwarded photo — the classic rejection reason.
+      name = isPdfDoc ? `${slug}-scan-blur.pdf` : `whatsapp-image-${year}-blur.jpg`;
+      sizeBytes = 48 * 1024;
+      break;
+    case 'wrongdoc':
+      // A file that names a different document entirely.
+      name = isPdfDoc ? `${slug}-aadhaar-card-copy.pdf` : `${slug}-aadhaar-card.jpg`;
+      sizeBytes = 190 * 1024;
+      break;
+    case 'stale':
+      name = isPdfDoc ? `${slug}-${document.id}-${year - 3}.pdf` : `${slug}-${document.id}-${year - 3}.jpg`;
+      sizeBytes = 180 * 1024;
+      break;
+    case 'short':
+      name = isPdfDoc
+        ? document.id === 'salary_slips'
+          ? `${slug}-salary-slip-1-month.pdf`
+          : `${slug}-bank-statement-2-months.pdf`
+        : `${slug}-${document.id}-1-month.jpg`;
+      sizeBytes = 200 * 1024;
+      break;
+    case 'wrongname':
+      name = isPdfDoc ? `someone-else-${document.id}.pdf` : `someone-else-${document.id}.jpg`;
+      sizeBytes = 220 * 1024;
+      break;
+    case 'expired':
+      name = isPdfDoc ? `${slug}-${document.id}-expired.pdf` : `${slug}-${document.id}-expired.jpg`;
+      sizeBytes = 210 * 1024;
+      break;
+    case 'huge':
+      name = isPdfDoc ? `${slug}-${document.id}-hires.pdf` : `${slug}-${document.id}-hires.jpg`;
+      sizeBytes = (document.maxSizeMB + 2) * 1024 * 1024; // past the slot's own limit
+      break;
+    case 'flawed':
+      // Legacy mixed flaw: PDF slots go stale, image slots go blurry.
+      return createSampleFile(document, applicantName, isPdfDoc ? 'stale' : 'blur');
+    case 'clean':
+    default:
+      name = isPdfDoc ? `${slug}-${document.id}.pdf` : `${slug}-${document.id}.jpg`;
+      if (document.id === 'salary_slips') name = `${slug}-salary-slips-3-months.pdf`;
+      if (document.id === 'bank_statement') name = `${slug}-bank-statement-6-months.pdf`;
+      if (document.id === 'form16') name = `${slug}-form-16-${year}.pdf`;
+      if (document.id === 'income_proof') name = `${slug}-income-proof-${year}.pdf`;
+      if (document.id === 'medical_reports') name = `${slug}-medical-report-${year}.pdf`;
+      if (document.id === 'photo') name = `${slug}-passport-photo.jpg`;
+      sizeBytes = isPdfDoc ? 210 * 1024 : 320 * 1024;
+      break;
   }
 
   const type = name.endsWith('.pdf') ? 'application/pdf' : 'image/jpeg';

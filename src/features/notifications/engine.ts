@@ -21,7 +21,10 @@ export type NotificationChannel = 'sms' | 'whatsapp' | 'both';
 export type NotificationKind =
   | 'otp'
   | 'application_received'
+  | 'eligibility_passed'
+  | 'document_issue'
   | 'documents_verified'
+  | 'under_review'
   | 'approved'
   | 'finalized'
   | 'rejected';
@@ -42,14 +45,19 @@ export interface NotificationRecord {
   n8nStatus: N8nDeliveryStatus;
 }
 
-export type LifecycleStage = 'received' | 'verified' | 'approved' | 'finalized';
+export type LifecycleStage = 'received' | 'verified' | 'review' | 'approved' | 'finalized' | 'rejected';
 
 export const LIFECYCLE_LABELS: Record<LifecycleStage, string> = {
   received: 'Application Received',
   verified: 'Document Verification',
+  review: 'Under Review',
   approved: 'Final Approval',
   finalized: 'Disbursement / Policy Issuance',
+  rejected: 'Application Rejected',
 };
+
+/** The outcome chosen by the underwriter on the dashboard. */
+export type Decision = 'approved' | 'rejected';
 
 interface NotificationContext {
   journeyType: JourneyType;
@@ -58,6 +66,12 @@ interface NotificationContext {
   language: LanguageCode;
   dict: TranslationDict;
   phone: string;
+  /** Weighted score, for the eligibility milestone. */
+  eligibilityScore?: number;
+  /** How many documents have an issue, for the document_issue milestone. */
+  documentCount?: number;
+  /** Why the underwriter rejected, quoted in the rejected message. */
+  rejectionReason?: string;
 }
 
 type BodyBuilder = (ctx: NotificationContext) => string;
@@ -132,18 +146,48 @@ const BODIES: Record<NotificationKind, BodyBuilder> = {
           ? `ಅರ್ಜಿ ${ctx.reference} ಅಂತಿಮ ✓. ಪಾಲಿಸಿ ಜಾರಿಯಾಗಿದೆ — ದಸ್ತಾವೇಜು ಇಮೇಲ್ ಮತ್ತು ಆ್ಯಪ್‌ನಲ್ಲಿ. ಕವರ್ ಇಂದಿನಿಂದ ಜಾರಿ. ವಿವರ PDF ನಲ್ಲಿ. — Paytm`
           : `Application ${ctx.reference} finalised ✓. Your policy has been issued — documents are in your email and the app. Cover is effective today. Full details in your PDF. — Paytm`,
 
-  rejected: ctx =>
-    ctx.language === 'hi'
-      ? `आवेदन ${ctx.reference}: दुर्भाग्यवश मानक शर्तों पर स्वीकृति संभव नहीं। ऐप में कारण और सुझाव देखें — सुधार के बाद दोबारा आवेदन स्वागत योग्य। — Paytm`
+  rejected: ctx => {
+    const reason = ctx.rejectionReason ? ` ${ctx.rejectionReason}.` : '';
+    return ctx.language === 'hi'
+      ? `आवेदन ${ctx.reference}: दुर्भाग्यवश मानक शर्तों पर स्वीकृति संभव नहीं।${reason ? ` मुख्य कारण:${reason}` : ''} ऐप में कारण और सुझाव देखें — सुधार के बाद दोबारा आवेदन स्वागत योग्य है। ट्रैकर पर "क्या बदलाव परिणाम बदलेगा" भी देखें। — Paytm`
       : ctx.language === 'kn'
-        ? `ಅರ್ಜಿ ${ctx.reference}: ದುರದೃಷ್ಟವಶಾತ್ ಪ್ರಮಾಣಿತ ಷರತ್ತುಗಳಲ್ಲಿ ಅನುಮೋದನೆ ಸಾಧ್ಯವಿಲ್ಲ. ಕಾರಣ ಮತ್ತು ಸಲಹೆಗಳು ಆ್ಯಪ್‌ನಲ್ಲಿ ನೋಡಿ. — Paytm`
-        : `Application ${ctx.reference}: unfortunately we cannot approve at standard terms today. Reasons and suggested fixes are in the app — a re-application after the fix is welcome. — Paytm`,
+        ? `ಅರ್ಜಿ ${ctx.reference}: ದುರದೃಷ್ಟವಶಾತ್ ಪ್ರಮಾಣಿತ ಷರತ್ತುಗಳಲ್ಲಿ ಅನುಮೋದನೆ ಸಾಧ್ಯವಿಲ್ಲ.${reason ? ` ಮುಖ್ಯ ಕಾರಣ:${reason}` : ''} ಕಾರಣ ಮತ್ತು ಸಲಹೆಗಳು ಆ್ಯಪ್‌ನಲ್ಲಿ ನೋಡಿ — ಸರಿಪಡಿಸಿದ ನಂತರ ಮರಳಿ ಅರ್ಜಿ ಸ್ವಾಗತವಾಗಿದೆ. — Paytm`
+        : `Application ${ctx.reference}: unfortunately we cannot approve at standard terms today.${reason ? ` Main reason:${reason}` : ''} Reasons and suggested fixes are in the app — a re-application after the fix is welcome. See “What would change the outcome” on your tracker. — Paytm`;
+  },
+
+  eligibility_passed: ctx => {
+    const score = ctx.eligibilityScore ?? 100;
+    const verdictWord =
+      ctx.language === 'hi' ? 'पात्र' : ctx.language === 'kn' ? 'ಅರ್ಹ' : 'eligible';
+    return ctx.language === 'hi'
+      ? `शुभ समाचार! आपकी पात्रता जाँच पारित हो गई — स्कोर ${score}%। आप ${verdictWord} घोषित हुए हैं। अगला चरण: दस्तावेज़ अपलोड। — Paytm`
+      : ctx.language === 'kn'
+        ? `ಶುಭಸುದ್ದಿ! ನಿಮ್ಮ ಅರ್ಹತಾ ಪರಿಶೀಲನೆ ಪಾಸ್ ಆಗಿದೆ — ಸ್ಕೋರ್ ${score}%. ನೀವು ${verdictWord} ಎಂದು ಘೋಷಿತ. ಮುಂದಿನ ಹಂತ: ದಸ್ತಾವೇಜು ಅಪ್‌ಲೋಡ್. — Paytm`
+        : `Good news! Your eligibility check passed — score ${score}%. You are declared ${verdictWord}. Next step: upload your documents. — Paytm`;
+  },
+
+  document_issue: ctx =>
+    ctx.language === 'hi'
+      ? `आवेदन ${ctx.reference}: ${ctx.documentCount ?? 1} दस्तावेज़ में समस्या मिली है। ऐप में सटीक दोष और समाधान देखें — उसी फ़ाइल को दोबारा अपलोड करें, समीक्षा तुरंत होगी। — Paytm`
+      : ctx.language === 'kn'
+        ? `ಅರ್ಜಿ ${ctx.reference}: ${ctx.documentCount ?? 1} ದಸ್ತಾವೇಜಿನಲ್ಲಿ ಸಮಸ್ಯೆ ಕಂಡುಬಂದಿದೆ. ಆ್ಯಪ್‌ನಲ್ಲಿ ನಿಖರ ದೋಷ ಮತ್ತು ಪರಿಹಾರ ನೋಡಿ — ಅದೇ ಫೈಲ್ ಮರು ಅಪ್‌ಲೋಡ್ ಮಾಡಿ, ಪರಿಶೀಲನೆ ತಕ್ಷಣ. — Paytm`
+        : `Application ${ctx.reference}: we found an issue in ${ctx.documentCount ?? 1} document. See the exact flaw and fix in the app — re-upload the same slot and the review reruns instantly. — Paytm`,
+
+  under_review: ctx =>
+    ctx.language === 'hi'
+      ? `आवेदन ${ctx.reference}: सभी दस्तावेज़ सत्यापित। फ़ाइल अब अंडरराइटर के पास है — निर्णय 1-2 कार्यदिवस में, और उसी क्षण आपको SMS मिलेगा। तब तक ऐप के असिस्टेंट से स्थिति पूछें। — Paytm`
+      : ctx.language === 'kn'
+        ? `ಅರ್ಜಿ ${ctx.reference}: ಎಲ್ಲಾ ದಸ್ತಾವೇಜು ಪರಿಶೀಲಿತ. ಫೈಲ್ ಈಗ ಅಂಡರ್‌ರೈಟರ್ ಬಳಿ — ನಿರ್ಧಾರ 1-2 ಕೆಲಸದ ದಿನದಲ್ಲಿ, ಮತ್ತು ಆ ಕ್ಷಣ ನಿಮಗೆ SMS ಬರುತ್ತದೆ. ಆಗಿನವರೆಗೆ ಆ್ಯಪ್‌ನ ಸಹಾಯಕನಿಂದ ಸ್ಥಿತಿ ಕೇಳಿ. — Paytm`
+        : `Application ${ctx.reference}: all documents verified. Your file is now with an underwriter — decision expected in 1-2 working days, and you will get an SMS the moment it is made. Meanwhile, track progress with the in-app assistant. — Paytm`,
 };
 
 const TITLES: Record<NotificationKind, (dict: TranslationDict) => string> = {
   otp: () => 'One-time password (OTP)',
   application_received: () => 'Application received',
+  eligibility_passed: () => 'Eligibility passed',
+  document_issue: () => 'Document issue found',
   documents_verified: dict => dict.documents.allVerified,
+  under_review: () => 'Under review',
   approved: () => 'Approved',
   finalized: () => 'Finalised',
   rejected: () => 'Decision: needs work',

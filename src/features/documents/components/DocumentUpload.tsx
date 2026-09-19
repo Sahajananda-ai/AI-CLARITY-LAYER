@@ -1,10 +1,12 @@
 import { useCallback, useState, type ChangeEvent, type DragEvent } from 'react';
 import type { Document, UploadedDocument } from '../../../shared/types/common';
 import { Card, Button } from '../../../shared/components';
-import { Upload, WandSparkles, FlaskConical } from 'lucide-react';
+import { AnimatedList } from '../../../shared/components/motion';
+import { Upload, WandSparkles, FlaskConical, ChevronDown } from 'lucide-react';
 import { cn } from '../../../shared/utils/cn';
+import { useI18n } from '../../../shared/i18n';
 import { UploadedDocumentCard } from './UploadedDocumentCard';
-import { createSampleFile, type SampleVariant } from '../validator';
+import { createSampleFile, PROBLEM_VARIANTS, type SampleVariant } from '../validator';
 
 interface DocumentUploadProps {
   document: Document;
@@ -26,6 +28,8 @@ export function DocumentUpload({
   busy,
 }: DocumentUploadProps) {
   const [dragActive, setDragActive] = useState(false);
+  const [showProblems, setShowProblems] = useState(false);
+  const { dict } = useI18n();
 
   const handleDrag = useCallback((event: DragEvent) => {
     event.preventDefault();
@@ -116,16 +120,40 @@ export function DocumentUpload({
       </label>
 
       <div className="flex flex-wrap items-center justify-center gap-2 border-t border-surface-100 pt-3">
-        <span className="text-xs text-surface-500">No file handy?</span>
+        <span className="text-xs text-surface-500">{dict.documents.noFileHandy}</span>
         <Button type="button" variant="secondary" size="sm" onClick={() => trySample('clean')} disabled={disabled} className="text-xs">
           <WandSparkles className="h-3.5 w-3.5" />
-          Use a sample file
+          {dict.documents.useSample}
         </Button>
-        <Button type="button" variant="ghost" size="sm" onClick={() => trySample('flawed')} disabled={disabled} className="text-xs">
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => setShowProblems(current => !current)}
+          disabled={disabled}
+          aria-expanded={showProblems}
+          className="text-xs"
+        >
           <FlaskConical className="h-3.5 w-3.5" />
-          Show a problem
+          {dict.documents.showProblem}
+          <ChevronDown className={cn('h-3 w-3 transition-transform', showProblems && 'rotate-180')} />
         </Button>
       </div>
+
+      {showProblems && (
+        <div className="border-t border-surface-100 bg-surface-50 px-4 py-3">
+          <p className="mb-1 text-xs font-semibold text-surface-700">{dict.problems.title}</p>
+          <p className="mb-2 text-[11px] text-surface-500">{dict.problems.subtitle}</p>
+          <AnimatedList
+            items={PROBLEM_VARIANTS.map(({ problemKey }) => dict.problems[problemKey] as string)}
+            onItemSelect={label => {
+              const match = PROBLEM_VARIANTS.find(({ problemKey }) => dict.problems[problemKey] === label);
+              trySample(match?.variant ?? 'flawed');
+              setShowProblems(false);
+            }}
+          />
+        </div>
+      )}
     </Card>
   );
 }

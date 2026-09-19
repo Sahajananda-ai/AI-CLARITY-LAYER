@@ -1,5 +1,37 @@
 import type { JourneyType, Document, Persona, EmploymentType } from '../types/common';
 
+/**
+ * Why is the applicant taking this personal loan? Underwriting uses the stated
+ * purpose to price the product; the assistant and the PDF statement quote it
+ * back so the applicant can see the whole file at a glance.
+ */
+export const LOAN_PURPOSES = [
+  'medical',
+  'wedding',
+  'home renovation',
+  'education',
+  'debt consolidation',
+  'travel',
+  'business',
+  'vehicle',
+] as const;
+
+export type LoanPurpose = (typeof LOAN_PURPOSES)[number];
+
+/** Banks offered in the disbursal-account picker (proper nouns stay English). */
+export const BANK_OPTIONS = [
+  'HDFC Bank',
+  'ICICI Bank',
+  'State Bank of India',
+  'Axis Bank',
+  'Kotak Mahindra Bank',
+  'Paytm Payments Bank',
+  'Punjab National Bank',
+  'Bank of Baroda',
+] as const;
+
+export const IFSC_PATTERN = /^[A-Z]{4}0[A-Z0-9]{6}$/;
+
 export const JOURNEY_CONFIG = {
   loan: {
     title: 'Personal Loan',
@@ -306,10 +338,14 @@ export const VERDICT_COLORS = {
   'not-eligible': 'error',
 } as const;
 
-/** Processing stages shown to the applicant for each journey. */
+/**
+ * Processing stages shown to the applicant for each journey. Stage 4
+ * ("Final decision") is where the approve/reject outcome lands, so the demo
+ * can show both the approval and the rejection path end to end.
+ */
 export const JOURNEY_STAGES: Record<JourneyType, string[]> = {
-  loan: ['Application Received', 'Document Verification', 'Credit Assessment', 'Final Approval', 'Disbursement'],
-  insurance: ['Application Received', 'Document Verification', 'Medical Assessment', 'Underwriting', 'Policy Issuance'],
+  loan: ['Application received', 'Eligibility check', 'Document verification', 'Under review', 'Final decision', 'Disbursement'],
+  insurance: ['Application received', 'Eligibility check', 'Document verification', 'Under review', 'Final decision', 'Policy issued'],
 };
 
 /** Messages the simulated AI narrates while it "works". */

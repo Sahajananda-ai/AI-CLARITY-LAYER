@@ -15,6 +15,8 @@ export interface LoanApplicant extends ApplicantBase {
   creditScore: number;
   loanAmount: number;
   tenureMonths: number;
+  /** Why the money is needed — chosen from LOAN_PURPOSES. */
+  loanPurpose?: string;
 }
 
 export interface InsuranceApplicant extends ApplicantBase {
@@ -24,6 +26,16 @@ export interface InsuranceApplicant extends ApplicantBase {
 }
 
 export type Applicant = LoanApplicant | InsuranceApplicant;
+
+/** Bank account that receives the disbursal (or debits the EMI autopay). */
+export interface BankDetails {
+  accountHolder: string;
+  accountNumber: string;
+  /** Confirmed re-entry of the account number. */
+  confirmAccountNumber: string;
+  ifsc: string;
+  bankName: string;
+}
 
 export interface Criteria {
   id: string;

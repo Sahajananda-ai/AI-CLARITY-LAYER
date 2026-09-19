@@ -5,15 +5,16 @@ import type {
   EligibilityResult,
   UploadedDocument,
   ChatMessage,
+  BankDetails,
 } from '../shared/types/common';
 import { DOCUMENT_REQUIREMENTS } from '../shared/utils/constants';
 import { getInitialUploadedDocuments } from '../features/documents';
 import { createWelcomeMessage } from '../features/chat/engine';
 import { onN8nDeliveryStatus } from '../features/notifications/engine';
-import type { NotificationRecord, LifecycleStage } from '../features/notifications/engine';
+import type { NotificationRecord, LifecycleStage, Decision } from '../features/notifications/engine';
 import type { N8nDeliveryStatus } from '../features/notifications/n8n';
 
-export type WizardStep = 'details' | 'eligibility' | 'documents';
+export type WizardStep = 'details' | 'eligibility' | 'documents' | 'bank';
 
 interface AppState {
   journeyType: JourneyType | null;
@@ -29,6 +30,13 @@ interface AppState {
   /** Post-submit simulation clock: which milestone has fired. */
   lifecycle: LifecycleStage | null;
   lifecycleAdvancedAt: number | null;
+  /** The underwriter's outcome — set by the dashboard decision control. */
+  decision: Decision | null;
+  /** Bank account that receives the disbursal; collected in the new wizard step. */
+  bankDetails: BankDetails | null;
+  bankVerified: boolean;
+  /** Freshly delivered milestones awaiting their popup toast. */
+  pendingToastIds: string[];
 }
 
 type AppAction =
@@ -46,6 +54,10 @@ type AppAction =
   | { type: 'MARK_NOTIFICATIONS_READ' }
   | { type: 'CLEAR_NOTIFICATIONS' }
   | { type: 'ADVANCE_LIFECYCLE'; payload: LifecycleStage }
+  | { type: 'SET_DECISION'; payload: Decision | null }
+  | { type: 'SET_BANK_DETAILS'; payload: BankDetails | null }
+  | { type: 'SET_BANK_VERIFIED'; payload: boolean }
+  | { type: 'CONSUME_TOAST'; payload: string }
   | { type: 'RESET' };
 
 const initialState: AppState = {
@@ -60,9 +72,13 @@ const initialState: AppState = {
   notifications: [],
   lifecycle: null,
   lifecycleAdvancedAt: null,
+  decision: null,
+  bankDetails: null,
+  bankVerified: false,
+  pendingToastIds: [],
 };
 
-const STORAGE_KEY = 'paytm-clarity-state-v1';
+const STORAGE_KEY = 'paytm-clarity-state-v2';
 
 /**
  * The router is the single source of truth for "which screen am I on" — the
@@ -72,7 +88,7 @@ const STORAGE_KEY = 'paytm-clarity-state-v1';
  */
 function reviveApplicationState(raw: string): AppState {
   try {
-    const parsed = JSON.parse(raw) as Partial<AppState>;
+    const parsed = JSON.parse(raw) as Partial<AppState> & { pendingToastIds?: unknown };
     if (!parsed || typeof parsed !== 'object') return initialState;
 
     return {
@@ -103,6 +119,11 @@ function reviveApplicationState(raw: string): AppState {
       // "received" instead of falling back to document-derived step 3 forever.
       lifecycle: parsed.submitted ? (parsed.lifecycle ?? 'received') : null,
       lifecycleAdvancedAt: parsed.submitted ? (parsed.lifecycleAdvancedAt ?? Date.now()) : null,
+      // Popups are ephemeral: never revive them across a refresh.
+      pendingToastIds: [],
+      decision: parsed.decision ?? null,
+      bankDetails: parsed.bankDetails ?? null,
+      bankVerified: parsed.bankVerified ?? false,
     };
   } catch {
     return initialState;
@@ -111,7 +132,16 @@ function reviveApplicationState(raw: string): AppState {
 
 function loadInitialState(): AppState {
   if (typeof window === 'undefined') return initialState;
-  const raw = window.localStorage.getItem(STORAGE_KEY);
+  // v1 sessions predate bank details / decisions; starting fresh avoids a
+  // half-migrated shape breaking the new wizard step.
+  const raw = window.localStorage.getItem(STORAGE_KEY) ?? window.localStorage.getItem('paytm-clarity-state-v1');
+  if (raw && !window.localStorage.getItem(STORAGE_KEY)) {
+    try {
+      window.localStorage.setItem(STORAGE_KEY, raw);
+    } catch {
+      /* ignore */
+    }
+  }
   return raw ? reviveApplicationState(raw) : initialState;
 }
 
@@ -180,7 +210,14 @@ function reducer(state: AppState, action: AppAction): AppState {
     case 'SET_PHONE':
       return { ...state, phone: action.payload };
     case 'ADD_NOTIFICATION':
-      return { ...state, notifications: [...state.notifications, action.payload] };
+      return {
+        ...state,
+        notifications: [...state.notifications, action.payload],
+        // Every new message pops up as a toast (the demo's "SMS lands on your
+        // phone" moment), except the OTP which already has its own screen hint.
+        pendingToastIds:
+          action.payload.kind === 'otp' ? state.pendingToastIds : [...state.pendingToastIds, action.payload.id],
+      };
     case 'SET_N8N_STATUS':
       return {
         ...state,
@@ -196,12 +233,20 @@ function reducer(state: AppState, action: AppAction): AppState {
         notifications: state.notifications.map(notification => ({ ...notification, read: true })),
       };
     case 'CLEAR_NOTIFICATIONS':
-      return { ...state, notifications: [] };
+      return { ...state, notifications: [], pendingToastIds: [] };
     case 'ADVANCE_LIFECYCLE':
       // Both the stage and the timestamp move together: the runner re-arms its
       // timer from the new timestamp, and the dashboard derives the tracker
       // position from the stage.
       return { ...state, lifecycle: action.payload, lifecycleAdvancedAt: Date.now() };
+    case 'SET_DECISION':
+      return { ...state, decision: action.payload };
+    case 'SET_BANK_DETAILS':
+      return { ...state, bankDetails: action.payload };
+    case 'SET_BANK_VERIFIED':
+      return { ...state, bankVerified: action.payload };
+    case 'CONSUME_TOAST':
+      return { ...state, pendingToastIds: state.pendingToastIds.filter(id => id !== action.payload) };
     case 'RESET':
       return {
         ...initialState,
@@ -232,6 +277,10 @@ interface AppContextValue {
     markNotificationsRead: () => void;
     clearNotifications: () => void;
     advanceLifecycle: (stage: LifecycleStage) => void;
+    setDecision: (decision: Decision | null) => void;
+    setBankDetails: (details: BankDetails | null) => void;
+    setBankVerified: (verified: boolean) => void;
+    consumeToast: (id: string) => void;
     reset: () => void;
   };
 }
@@ -277,6 +326,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       markNotificationsRead: () => dispatch({ type: 'MARK_NOTIFICATIONS_READ' }),
       clearNotifications: () => dispatch({ type: 'CLEAR_NOTIFICATIONS' }),
       advanceLifecycle: (stage: LifecycleStage) => dispatch({ type: 'ADVANCE_LIFECYCLE', payload: stage }),
+      setDecision: (decision: Decision | null) => dispatch({ type: 'SET_DECISION', payload: decision }),
+      setBankDetails: (details: BankDetails | null) => dispatch({ type: 'SET_BANK_DETAILS', payload: details }),
+      setBankVerified: (verified: boolean) => dispatch({ type: 'SET_BANK_VERIFIED', payload: verified }),
+      consumeToast: (id: string) => dispatch({ type: 'CONSUME_TOAST', payload: id }),
       reset: () => {
         try {
           window.localStorage.removeItem(STORAGE_KEY);
