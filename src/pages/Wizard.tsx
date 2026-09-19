@@ -124,6 +124,9 @@ export function Wizard() {
       );
     }
     navigate('/dashboard');
+    // The lifecycle clock starts ticking with the first milestone, so the
+    // tracker advances from step 1 automatically (verified → 2, approved → 3…).
+    actions.advanceLifecycle('received');
   };
 
   return (

@@ -12,6 +12,7 @@ import { JOURNEY_CONFIG, JOURNEY_STAGES, PRE_EXISTING_LOADING } from '../../shar
 import { formatCurrency } from '../../shared/utils/formatters';
 import { calculateEmi, estimateAnnualPremium, evaluateEligibility } from '../eligibility/engine';
 import { getDocumentRequirements } from '../documents/validator';
+import type { LifecycleStage } from '../notifications/engine';
 
 /**
  * Status assistant.
@@ -30,6 +31,10 @@ export interface ChatContext {
   journeyType: JourneyType;
   eligibility: EligibilityResult | null;
   uploadedDocs: UploadedDocument[];
+  /** How far the simulated backend clock has advanced after submission. */
+  lifecycle: LifecycleStage | null;
+  /** True once the applicant has submitted (drives post-submit stages). */
+  submitted: boolean;
 }
 
 export interface ChatReply {
@@ -164,6 +169,19 @@ export function getDocumentSnapshot(journeyType: JourneyType, docs: UploadedDocu
   };
 }
 
+/** Overlay the post-submit lifecycle clock onto a document-derived stage. */
+function withLifecycle(
+  stage: { index: number; label: string; blocker: string | null },
+  ctx: Pick<ChatContext, 'journeyType' | 'lifecycle' | 'submitted'>
+): { index: number; label: string; blocker: string | null } {
+  const index = getLifecycleStageIndex(ctx.lifecycle, ctx.submitted, stage.index);
+  if (index <= stage.index) return { ...stage, index };
+  // The lifecycle has moved past the documents — speak in the canonical stage
+  // labels so "approved" really says Final Approval, not Credit Assessment.
+  const stages = JOURNEY_STAGES[ctx.journeyType];
+  return { index, label: stages[Math.min(index, stages.length - 1)], blocker: null };
+}
+
 /** The stage the application would realistically be sitting in right now. */
 export function getApplicationStage(journeyType: JourneyType, snapshot: DocumentSnapshot): { index: number; label: string; blocker: string | null } {
   const stages = JOURNEY_STAGES[journeyType];
@@ -179,12 +197,31 @@ export function getApplicationStage(journeyType: JourneyType, snapshot: Document
   return { index: 2, label: stages[2], blocker: null };
 }
 
+/**
+ * The stage the tracker should display, combining two clocks:
+ * document readiness (above) and the post-submit lifecycle simulation. Before
+ * submission the tracker follows the documents; after submission the lifecycle
+ * clock takes over so approved/finalised actually move the tracker forward —
+ * it used to freeze at step 3 even when the approval SMS had already landed.
+ */
+export function getLifecycleStageIndex(lifecycle: LifecycleStage | null, submitted: boolean, docStageIndex: number): number {
+  if (!submitted || !lifecycle) return docStageIndex;
+  const byStage: Record<LifecycleStage, number> = {
+    received: 1,
+    verified: 2,
+    approved: 3,
+    // Past the last step — the tracker renders every stage as completed.
+    finalized: Number.MAX_SAFE_INTEGER,
+  };
+  return byStage[lifecycle];
+}
+
 /* ------------------------------------------------------------ status answers */
 
 function statusResponse(ctx: ChatContext, reference: string): string {
   const stages = JOURNEY_STAGES[ctx.journeyType];
   const snapshot = getDocumentSnapshot(ctx.journeyType, ctx.uploadedDocs);
-  const stage = getApplicationStage(ctx.journeyType, snapshot);
+  const stage = withLifecycle(getApplicationStage(ctx.journeyType, snapshot), ctx);
 
   const timeline = stages
     .map((label, index) => {
@@ -194,8 +231,11 @@ function statusResponse(ctx: ChatContext, reference: string): string {
     })
     .join('\n');
 
+  const finalised = stage.index >= stages.length;
   const lines = [
-    `Your **${ctx.journeyType === 'loan' ? 'loan' : 'insurance'} application ${reference}** is at **${stage.label}** — step ${stage.index + 1} of ${stages.length}.`,
+    finalised
+      ? `Your **${ctx.journeyType === 'loan' ? 'loan' : 'insurance'} application ${reference}** is **finalised ✓** — all ${stages.length} steps are complete. Nothing more is pending from your side.`
+      : `Your **${ctx.journeyType === 'loan' ? 'loan' : 'insurance'} application ${reference}** is at **${stage.label}** — step ${Math.min(stage.index + 1, stages.length)} of ${stages.length}.`,
     '',
     timeline,
     '',
@@ -215,7 +255,9 @@ function statusResponse(ctx: ChatContext, reference: string): string {
     }
   } else {
     lines.push(
-      `**Nothing is blocking you.** All ${snapshot.verified.length} required documents passed review, so an underwriter is picking this up next.`
+      finalised
+        ? `**Nothing left to wait for.** All ${snapshot.verified.length} required documents passed review and the money/cover is with you — the tracker above stays fully green.`
+        : `**Nothing is blocking you.** All ${snapshot.verified.length} required documents passed review, so an underwriter is picking this up next.`
     );
   }
 
@@ -258,7 +300,7 @@ function documentsResponse(ctx: ChatContext): string {
 
 function timelineResponse(ctx: ChatContext): string {
   const snapshot = getDocumentSnapshot(ctx.journeyType, ctx.uploadedDocs);
-  const stage = getApplicationStage(ctx.journeyType, snapshot);
+  const stage = withLifecycle(getApplicationStage(ctx.journeyType, snapshot), ctx);
   const isLoan = ctx.journeyType === 'loan';
 
   if (stage.blocker) {
@@ -273,6 +315,23 @@ function timelineResponse(ctx: ChatContext): string {
       '',
       `The date moves as soon as the documents land — uploading them is the single fastest thing you can do.`,
     ].join('\n');
+  }
+
+  if (stage.index >= JOURNEY_STAGES[ctx.journeyType].length) {
+    return isLoan
+      ? [
+          `**This loan is disbursed ✓** — the amount has been credited and the tracker shows every step complete.`,
+          '',
+          `• First EMI: due the same date next month (UPI autopay recommended).`,
+          `• Full schedule, interest and fee breakup: in your PDF statement.`,
+          `• Ask me *"how do I repay?"* or *"what if I miss a month?"* any time.`,
+        ].join('\n')
+      : [
+          `**Your policy is issued ✓** — cover is effective today and the document is in your email and the app.`,
+          '',
+          `• Premium autopay keeps the cover continuous — ask me *"how do I repay?"*.`,
+          `• Claims and exclusions: ask *"what does the policy cover?"*.`,
+        ].join('\n');
   }
 
   if (isLoan) {
@@ -679,7 +738,7 @@ function cancelResponse(ctx: ChatContext, reference: string): string {
 
 function generalResponse(ctx: ChatContext): string {
   const snapshot = getDocumentSnapshot(ctx.journeyType, ctx.uploadedDocs);
-  const stage = getApplicationStage(ctx.journeyType, snapshot);
+  const stage = withLifecycle(getApplicationStage(ctx.journeyType, snapshot), ctx);
 
   return [
     `I have your whole file in front of me — ${ctx.journeyType === 'loan' ? 'loan' : 'insurance'}, currently at **${stage.label}**, ${snapshot.verified.length} document(s) verified.`,

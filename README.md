@@ -50,7 +50,7 @@ Other scripts: `npm run build` (typecheck + production build), `npm run preview`
 | 6 | Open the assistant and type free-text: *"what happens if I miss one month repayment?"* | The day-by-day answer: reminder, ₹500+GST late fee, CIBIL impact at day 30, recovery, the catch-up path |
 | 7 | Then ask *"how can I become more eligible?"* and *"what does the policy cover?"* | The improve answer **re-runs the eligibility engine** on a corrected profile and reports the projected score |
 | 8 | Click **Download PDF statement** | Six-section PDF: summary, verdict, verified documents, exact EMI/premium maths, **how the loan works**, and the notification log |
-| 9 | Open **⚙ settings** on the notification feed, paste an n8n webhook URL | Every milestone mirrors to n8n → Slack/Sheets/real WhatsApp send (see `docs/n8n-clarity-workflow.json`) |
+| 9 | Open **⚙ settings** on the notification feed, paste an n8n webhook URL, hit **Test webhook** | Badge flips to “n8n connected”, the test ping lands in n8n instantly, and every milestone afterwards shows a `delivered ✓` chip (see `docs/n8n-clarity-workflow.json`) |
 
 > **Sample files:** you do not need a real PAN card PDF. Every upload slot offers
 > *Use a sample file* (a clean, applicant-named file) and *Show a problem* (a deliberately flawed one).

@@ -3,7 +3,7 @@ import { JOURNEY_CONFIG } from '../../shared/utils/constants';
 import { formatCurrency } from '../../shared/utils/formatters';
 import { calculateEmi, estimateAnnualPremium } from '../eligibility/engine';
 import type { LanguageCode, TranslationDict } from '../../shared/i18n';
-import { notifyN8n } from './n8n';
+import { notifyN8n, getN8nWebhookUrl, type N8nDeliveryStatus } from './n8n';
 
 /**
  * Notification engine.
@@ -38,6 +38,8 @@ export interface NotificationRecord {
   language: LanguageCode;
   sentAt: Date;
   read: boolean;
+  /** Outcome of the mirror to the n8n webhook (visible as a chip in the feed). */
+  n8nStatus: N8nDeliveryStatus;
 }
 
 export type LifecycleStage = 'received' | 'verified' | 'approved' | 'finalized';
@@ -164,12 +166,27 @@ export function createNotification(
     language: ctx.language,
     sentAt: new Date(),
     read: false,
+    n8nStatus: getN8nWebhookUrl() ? 'pending' : 'not-configured',
   };
 }
 
 /**
+ * Delivery-status listeners. When the webhook mirror resolves, the engine
+ * announces the outcome so the store can update the record's chip. Registered
+ * by the app provider; a plain module variable keeps this file store-agnostic.
+ */
+type DeliveryStatusListener = (id: string, status: N8nDeliveryStatus) => void;
+const deliveryListeners = new Set<DeliveryStatusListener>();
+
+export function onN8nDeliveryStatus(listener: DeliveryStatusListener): () => void {
+  deliveryListeners.add(listener);
+  return () => deliveryListeners.delete(listener);
+}
+
+/**
  * Composes and dispatches the milestone message for a lifecycle event.
- * Returns the record so the reducer can append it to the feed.
+ * Returns the record so the reducer can append it to the feed; the n8n mirror
+ * resolves in the background and updates the record's delivery chip.
  */
 export function dispatchNotification(
   kind: NotificationKind,
@@ -186,6 +203,10 @@ export function dispatchNotification(
     message: record.body,
     journeyType: ctx.journeyType,
     sentAt: record.sentAt.toISOString(),
+  }).then(status => {
+    // The caller appends the record synchronously right after this returns, so
+    // the network reply (always at least a macrotask later) lands on a stored id.
+    deliveryListeners.forEach(listener => listener(record.id, status));
   });
   return record;
 }

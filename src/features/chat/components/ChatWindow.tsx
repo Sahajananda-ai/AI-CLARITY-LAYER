@@ -47,7 +47,7 @@ function nextMessageId(kind: 'user' | 'assistant' | 'error'): string {
 
 export function ChatWindow() {
   const { state, actions } = useApp();
-  const { applicant, journeyType, eligibilityResult, uploadedDocuments, chatMessages } = state;
+  const { applicant, journeyType, eligibilityResult, uploadedDocuments, chatMessages, lifecycle, submitted } = state;
 
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -98,6 +98,8 @@ export function ChatWindow() {
         journeyType,
         eligibility: eligibilityResult,
         uploadedDocs: uploadedDocuments,
+        lifecycle,
+        submitted,
       });
 
       actions.addChatMessage({

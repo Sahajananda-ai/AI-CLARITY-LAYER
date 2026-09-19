@@ -9,7 +9,9 @@ import type {
 import { DOCUMENT_REQUIREMENTS } from '../shared/utils/constants';
 import { getInitialUploadedDocuments } from '../features/documents';
 import { createWelcomeMessage } from '../features/chat/engine';
+import { onN8nDeliveryStatus } from '../features/notifications/engine';
 import type { NotificationRecord, LifecycleStage } from '../features/notifications/engine';
+import type { N8nDeliveryStatus } from '../features/notifications/n8n';
 
 export type WizardStep = 'details' | 'eligibility' | 'documents';
 
@@ -40,6 +42,7 @@ type AppAction =
   | { type: 'SUBMIT_APPLICATION' }
   | { type: 'SET_PHONE'; payload: string | null }
   | { type: 'ADD_NOTIFICATION'; payload: NotificationRecord }
+  | { type: 'SET_N8N_STATUS'; payload: { id: string; status: N8nDeliveryStatus } }
   | { type: 'MARK_NOTIFICATIONS_READ' }
   | { type: 'CLEAR_NOTIFICATIONS' }
   | { type: 'ADVANCE_LIFECYCLE'; payload: LifecycleStage }
@@ -95,6 +98,11 @@ function reviveApplicationState(raw: string): AppState {
           }))
         : [],
       wizardStep: parsed.wizardStep ?? 'details',
+      // Sessions persisted before the lifecycle clock existed have submitted
+      // applications with no stage — seed them so the tracker resumes from
+      // "received" instead of falling back to document-derived step 3 forever.
+      lifecycle: parsed.submitted ? (parsed.lifecycle ?? 'received') : null,
+      lifecycleAdvancedAt: parsed.submitted ? (parsed.lifecycleAdvancedAt ?? Date.now()) : null,
     };
   } catch {
     return initialState;
@@ -173,6 +181,15 @@ function reducer(state: AppState, action: AppAction): AppState {
       return { ...state, phone: action.payload };
     case 'ADD_NOTIFICATION':
       return { ...state, notifications: [...state.notifications, action.payload] };
+    case 'SET_N8N_STATUS':
+      return {
+        ...state,
+        notifications: state.notifications.map(notification =>
+          notification.id === action.payload.id
+            ? { ...notification, n8nStatus: action.payload.status }
+            : notification
+        ),
+      };
     case 'MARK_NOTIFICATIONS_READ':
       return {
         ...state,
@@ -211,6 +228,7 @@ interface AppContextValue {
     submitApplication: () => void;
     setPhone: (phone: string | null) => void;
     addNotification: (record: NotificationRecord) => void;
+    setN8nStatus: (id: string, status: N8nDeliveryStatus) => void;
     markNotificationsRead: () => void;
     clearNotifications: () => void;
     advanceLifecycle: (stage: LifecycleStage) => void;
@@ -233,6 +251,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [state]);
 
+  // Record the outcome of each n8n webhook mirror so the feed can show a real
+  // delivery chip (queued → delivered ✓ / n8n failed) per message.
+  useEffect(() => {
+    return onN8nDeliveryStatus((id, status) =>
+      dispatch({ type: 'SET_N8N_STATUS', payload: { id, status } })
+    );
+  }, []);
+
   const actions = useMemo(
     () => ({
       setJourney: (journeyType: JourneyType) => dispatch({ type: 'SET_JOURNEY', payload: journeyType }),
@@ -246,6 +272,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       submitApplication: () => dispatch({ type: 'SUBMIT_APPLICATION' }),
       setPhone: (phone: string | null) => dispatch({ type: 'SET_PHONE', payload: phone }),
       addNotification: (record: NotificationRecord) => dispatch({ type: 'ADD_NOTIFICATION', payload: record }),
+      setN8nStatus: (id: string, status: N8nDeliveryStatus) =>
+        dispatch({ type: 'SET_N8N_STATUS', payload: { id, status } }),
       markNotificationsRead: () => dispatch({ type: 'MARK_NOTIFICATIONS_READ' }),
       clearNotifications: () => dispatch({ type: 'CLEAR_NOTIFICATIONS' }),
       advanceLifecycle: (stage: LifecycleStage) => dispatch({ type: 'ADVANCE_LIFECYCLE', payload: stage }),

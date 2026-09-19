@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
 import { useApp } from '../contexts/AppContext';
 import { ChatWindow } from '../features/chat/components/ChatWindow';
-import { buildReference, getApplicationStage, getDocumentSnapshot } from '../features/chat/engine';
+import { buildReference, getApplicationStage, getLifecycleStageIndex, getDocumentSnapshot } from '../features/chat/engine';
 import { NotificationFeed, dispatchNotification } from '../features/notifications';
 import { generateStatementPdf } from '../features/statement';
 import { DocumentStatusList } from '../features/documents';
@@ -39,7 +39,10 @@ export function Dashboard() {
   const config = JOURNEY_CONFIG[journeyType];
   const documents = getDocumentRequirements(journeyType);
   const snapshot = getDocumentSnapshot(journeyType, uploadedDocuments);
-  const stage = getApplicationStage(journeyType, snapshot);
+  // After submission the lifecycle clock takes over the tracker, so approved /
+  // finalised actually move it — it used to freeze at step 3 no matter what.
+  const docStage = getApplicationStage(journeyType, snapshot);
+  const stage = { ...docStage, index: getLifecycleStageIndex(state.lifecycle, state.submitted, docStage.index) };
   const stages = JOURNEY_STAGES[journeyType];
   const reference = buildReference({ journeyType, applicant });
   const verdictColor = VERDICT_COLORS[eligibilityResult.verdict] as 'success' | 'warning' | 'error';
@@ -162,9 +165,9 @@ export function Dashboard() {
             </div>
             <div className="flex items-center gap-2">
               {state.submitted && state.lifecycle !== 'finalized' && (
-                <Button variant="secondary" size="sm" onClick={advanceStageNow} title="Demo control: skip ahead to the next milestone now">
+                <Button variant="secondary" size="sm" onClick={advanceStageNow} title={dict.dashboard.advanceHint}>
                   <FastForward className="h-4 w-4" />
-                  Advance stage now
+                  {dict.dashboard.advance}
                 </Button>
               )}
               <Button size="sm" onClick={downloadPdf} loading={isGeneratingPdf} id="pdf-download-btn">
@@ -172,7 +175,7 @@ export function Dashboard() {
                 {dict.statement.downloadPdf}
               </Button>
               <span className="hidden rounded-full bg-surface-100 px-3 py-1 text-xs font-medium text-surface-600 md:inline">
-                {format(dict.dashboard.stepOf, { current: stage.index + 1, total: stages.length })}
+                {format(dict.dashboard.stepOf, { current: Math.min(stage.index + 1, stages.length), total: stages.length })}
               </span>
             </div>
           </div>
@@ -181,26 +184,43 @@ export function Dashboard() {
             {stages.map((label, index) => {
               const isDone = index < stage.index;
               const isCurrent = index === stage.index;
+              const allComplete = stage.index >= stages.length;
               return (
                 <li key={label} className="flex flex-1 items-center gap-3 sm:flex-col sm:items-start">
                   <div className="flex items-center gap-2 sm:w-full">
                     <span
                       className={cn(
                         'flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-xs font-semibold',
-                        isDone
+                        isDone || (allComplete && !isCurrent)
                           ? 'bg-success-500 text-white'
                           : isCurrent
                             ? 'bg-primary-600 text-white ring-4 ring-primary-100'
                             : 'bg-surface-200 text-surface-500'
                       )}
                     >
-                      {isDone ? <CheckCircle2 className="h-4 w-4" /> : index + 1}
+                      {isDone || (allComplete && !isCurrent) ? <CheckCircle2 className="h-4 w-4" /> : index + 1}
                     </span>
-                    <span className={cn('hidden flex-1 rounded sm:block', isDone ? 'bg-success-200' : 'bg-surface-200', 'h-0.5')} />
+                    <span
+                      className={cn(
+                        'hidden flex-1 rounded sm:block',
+                        isDone || (allComplete && !isCurrent) ? 'bg-success-200' : 'bg-surface-200',
+                        'h-0.5'
+                      )}
+                    />
                   </div>
                   <div className="min-w-0">
-                    <p className={cn('text-xs font-medium', isCurrent ? 'text-primary-700' : 'text-surface-600')}>{label}</p>
-                    {isCurrent && <p className="text-[11px] text-surface-400">in progress</p>}
+                    <p
+                      className={cn(
+                        'text-xs font-medium',
+                        isCurrent ? 'text-primary-700' : isDone || allComplete ? 'text-success-700' : 'text-surface-600'
+                      )}
+                    >
+                      {label}
+                    </p>
+                    {isCurrent && <p className="text-[11px] text-surface-400">{dict.dashboard.inProgress}</p>}
+                    {allComplete && !isCurrent && (
+                      <p className="text-[11px] text-success-600">{dict.dashboard.completed}</p>
+                    )}
                   </div>
                 </li>
               );
